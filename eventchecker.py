@@ -132,7 +132,7 @@ class CfxEventChecker:
         self.handlers: Dict[str, Set[str]] = dict()
         self.emitters: Dict[str, Set[str]] = dict()
 
-        self.path = Path(path)
+        self.path = Path(path).resolve()
         self.debug = debug
 
         self.ignores = [name for name in ignore if name not in IGNORED_EVENTS]
@@ -143,7 +143,7 @@ class CfxEventChecker:
             print(*args, **kwargs)
 
     def process(self):
-        for root, dirs, files in os.walk(self.path.resolve()):
+        for root, dirs, files in os.walk(self.path):
             ignored_dirs = [folder for folder in (IGNORED_FOLDER_NAMES + self.ignores_dirs) if folder in dirs]
             for folder in ignored_dirs:
                 dirs.remove(folder)
