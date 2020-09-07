@@ -103,6 +103,7 @@ class EventMatch:
         return self.function in (
             'AddEventHandler',
             'on',
+            'onNet',
         )
 
     @property
@@ -135,8 +136,8 @@ class CfxEventChecker:
         self.path = Path(path).resolve()
         self.debug = debug
 
-        self.ignores = [name for name in ignore if name not in IGNORED_EVENTS]
-        self.ignores_dirs = [name for name in ignore_dir if name not in IGNORED_FOLDER_NAMES]
+        self.ignores = list(dict.fromkeys(IGNORED_EVENTS + ignore))
+        self.ignores_dirs = list(dict.fromkeys(IGNORED_FOLDER_NAMES + ignore_dir))
 
     def debug_print(self, *args, **kwargs):
         if self.debug:
@@ -144,7 +145,7 @@ class CfxEventChecker:
 
     def process(self):
         for root, dirs, files in os.walk(self.path):
-            ignored_dirs = [folder for folder in (IGNORED_FOLDER_NAMES + self.ignores_dirs) if folder in dirs]
+            ignored_dirs = [folder for folder in self.ignores_dirs if folder in dirs]
             for folder in ignored_dirs:
                 dirs.remove(folder)
                 self.debug_print(f'>>> skipping {folder}')
@@ -172,7 +173,7 @@ class CfxEventChecker:
         resource_path = file.relative_to(self.path).as_posix()
         result = EventMatch(match)
 
-        if result.event_name in IGNORED_EVENTS + self.ignores:
+        if result.event_name in self.ignores:
             self.debug_print(f'>>> skipping IGNORED event {result.event_name}')
             return
 
@@ -201,8 +202,8 @@ def main(raw_args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('path', help='Path to server resources folder')
     parser.add_argument('-d', '--debug', action='store_true')
-    parser.add_argument('-i', '--ignore', nargs='*', action='append', default=[], help='Add event name to ignore list')
-    parser.add_argument('-id', '--ignore-dir', nargs='*', action='append', default=[], help='Add folder name to ignore list')
+    parser.add_argument('-i', '--ignore', action='append', default=[], help='Add event name to ignore list')
+    parser.add_argument('-id', '--ignore-dir', action='append', default=[], help='Add folder name to ignore list')
 
     args = parser.parse_args(raw_args)
 
