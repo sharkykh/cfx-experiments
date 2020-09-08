@@ -10,6 +10,10 @@ from typing import (
 
 from pathlib import Path
 
+# A list of ignored paths (can be used to ignore complete folders), no glob support
+IGNORED_PATHS = [
+]
+
 # A list of ignored resources by resource name, no glob support
 IGNORED_RESOURCES = [
 ]
@@ -169,13 +173,17 @@ def file_suffix_filter(files: List[Path], suffixes: List[str]):
 def is_ignored_event(name: str, patterns: List[str]):
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
+def is_ignored_path(manifest: Path, paths: List[str]):
+    return any(path in manifest.parents for path in paths)
+
 class CfxEventChecker:
     def __init__(
         self,
         path: str,
         debug: bool,
         ignore_events: List[str],
-        ignore_resource: List[str],
+        ignore_resources: List[str],
+        ignore_paths: List[str],
     ):
         self.handlers: Dict[str, Set[str]] = dict()
         self.emitters: Dict[str, Set[str]] = dict()
@@ -184,7 +192,11 @@ class CfxEventChecker:
         self.debug = debug
 
         self.ignored_events: List[str] = list(dict.fromkeys(IGNORED_EVENTS + ignore_events))
-        self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resource))
+        self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resources))
+        self.ignored_paths: List[str] = [
+            Path(path) for path
+            in dict.fromkeys(IGNORED_PATHS + ignore_paths)
+        ]
 
     def debug_print(self, *args, **kwargs):
         if self.debug:
@@ -197,12 +209,12 @@ class CfxEventChecker:
         resource_name = resource_path.name
 
         if resource_name in self.ignored_resources:
-            self.debug_print(f'# skipping resource {resource_name}')
+            self.debug_print(f'>>> skipping IGNORED resource {resource_name}')
             return []
 
         # if this manifest file is in a `[name]` folder, filter it out
         if re.fullmatch(CATEGORY_FOLDER, resource_name):
-            self.debug_print(f'# skipping resource {resource_name}')
+            self.debug_print(f">>> skipping resource {resource_name} because it's in a category folder")
             return []
 
         try:
@@ -276,7 +288,13 @@ class CfxEventChecker:
         ]
 
         for manifest_path in manifests:
-            self.debug_print(f'>>> Found manifest: {manifest_path.relative_to(self.path).as_posix()}')
+            rel_path = manifest_path.relative_to(self.path)
+
+            if is_ignored_path(rel_path, self.ignored_paths):
+                self.debug_print(f'>>> skipping IGNORED path {rel_path.as_posix()}')
+                continue
+
+            self.debug_print(f'>>> Found manifest: {rel_path.as_posix()}')
 
             for cur_path in self.parse_resource_manifest(manifest_path):
                 self.debug_print(f'>>> Processing file: {cur_path.relative_to(self.path).as_posix()}')
@@ -352,12 +370,19 @@ class CfxEventChecker:
 
 def main(raw_args=None):
     parser = argparse.ArgumentParser(description='Look for possible non-emitted/non-triggered events')
-    parser.add_argument('-o', '--out', help='Dump result to file')
-    parser.add_argument('-r', '--reverse', action='store_true', help='Look for possible non-handled event emitters/triggers instead')
+    parser.add_argument('-o', '--out',
+                        help='Dump result to file')
+    parser.add_argument('-r', '--reverse', action='store_true',
+                        help='Look for possible non-handled event emitters/triggers instead')
     parser.add_argument('-d', '--debug', action='store_true')
-    parser.add_argument('-i', '--ignore', action='append', default=[], help='Add event name to ignore list (can use globbing - * ?)')
-    parser.add_argument('-ir', '--ignore-resource', action='append', default=[], help='Add resource name to ignore list (no globbing support)')
-    parser.add_argument('path', help='Path to server resources folder')
+    parser.add_argument('-i', '--ignore', action='append', default=[],
+                        help='Add event name to ignore list (can use globbing - * ?)')
+    parser.add_argument('-ir', '--ignore-resource', action='append', default=[],
+                        help='Add resource name to ignore list (no globbing support)')
+    parser.add_argument('-ip', '--ignore-path', action='append', default=[],
+                        help='Add an ignored path to ignore list - can be used to ignore complete folders (no globbing support)')
+    parser.add_argument('path',
+                        help='Path to server resources folder')
 
     args = parser.parse_args(raw_args)
 
@@ -365,7 +390,8 @@ def main(raw_args=None):
         path=args.path,
         debug=args.debug,
         ignore_events=args.ignore,
-        ignore_resource=args.ignore_resource,
+        ignore_resources=args.ignore_resource,
+        ignore_paths=args.ignore_path,
     )
     app.process()
     if args.reverse:
