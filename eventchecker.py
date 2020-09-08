@@ -87,8 +87,8 @@ IGNORED_EVENTS = [
 #   RegisterNetEvent
 
 LUA_EVENTS = re.compile(
-    r'^\s*(?P<func>AddEventHandler|Trigger(?:Client|Server)?Event|RegisterNetEvent)'
-    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]',
+    r'(?:^|[ \t]+)(?P<func>AddEventHandler|Trigger(?:Client|Server)?Event|RegisterNetEvent)'
+    r'\(\s*["\'](?P<event>[^"\']+)["\']\s*[,)]',
     re.MULTILINE
 )
 
@@ -99,8 +99,8 @@ LUA_EVENTS = re.compile(
 #   onNet
 
 JS_EVENTS = re.compile(
-    r'^\s*(?P<func>on|onNet|emit|emitNet)'
-    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]',
+    r'(?:^|[ \t]+)(?P<func>on|onNet|emit|emitNet)'
+    r'\(\s*["\'](?P<event>[^"\']+)["\']\s*[,)]',
     re.MULTILINE
 )
 
