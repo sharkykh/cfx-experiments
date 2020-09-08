@@ -1,17 +1,25 @@
 import argparse
-import os
+import ast
+import fnmatch
 import re
-from typing import Dict, List, Set
+from typing import (
+    Dict,
+    List,
+    Set,
+)
 
 from pathlib import Path
 
-IGNORED_FOLDER_NAMES = [
-    'node_modules',
-    'dist',
-    '[builders]',
+# A list of ignored resources by resource name, no glob support
+IGNORED_RESOURCES = [
 ]
 
+# A list of ignored event names, can use globs (*, ?)
 IGNORED_EVENTS = [
+    '__cfx_internal:*',
+    # NUI Callback Events (JS)
+    '__cfx_nui:*',
+
     # Core events
     'gameEventTriggered',
     'onClientResourceStart',
@@ -40,49 +48,75 @@ IGNORED_EVENTS = [
     'playerEnteredScope',
     'playerLeftScope',
 
+    # baseevents
+    'baseevents:*',
+
     # chat
     'chatMessage',
-    'chat:addMessage',
-    'chat:addSuggestion',
-    'chat:removeSuggestion',
-    'chat:addTemplate',
-    'chat:clear',
+    'chat:*',
 
     # sessionmanager
     'hostingSession',
     'hostedSession',
+    'sessionHostResult',
+
+    # spawnmanager
+    'playerSpawned',
 
     # mapmanager
-    'mapmanager:roundEnded',
-
-    # ...
-    '__cfx_internal:serverPrint',
-    '__cfx_internal:commandFallback',
+    'mapmanager:*',
+    'onClientMapStart',
+    'onClientMapStop',
+    'onClientGameTypeStart',
+    'onClientGameTypeStop',
+    'onMapStart',
+    'onMapStop',
+    'onGameTypeStart',
+    'onGameTypeStop',
 ]
-
 
 # Lua events:
 #   AddEventHandler
-#   RegisterNetEvent
 #   TriggerEvent
+#   TriggerClientEvent
 #   TriggerServerEvent
+#   RegisterNetEvent
 
 LUA_EVENTS = re.compile(
-    r'\b(?P<func>AddEventHandler|RegisterNetEvent|Trigger(?:Client|Server)?Event)'
-    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]'
+    r'^\s*(?P<func>AddEventHandler|Trigger(?:Client|Server)?Event|RegisterNetEvent)'
+    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]',
+    re.MULTILINE
 )
 
 # JS events:
 #   emit
 #   emitNet
-#   onNet
 #   on
+#   onNet
 
 JS_EVENTS = re.compile(
-    r'\b(?P<func>on|onNet|emit|emitNet)'
-    # r"""(?:\("(?P<event>[^"]+)"|\('(?P<event>[^']+)'|\(`(?P<event>[^`]+)`"""
-    # r')\s*[,)]'
-    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]'
+    r'^\s*(?P<func>on|onNet|emit|emitNet)'
+    r'\(["\'](?P<event>[^"\']+)["\']\s*[,)]',
+    re.MULTILINE
+)
+
+
+CATEGORY_FOLDER = re.compile(
+    r'\[[^\]]+\]'
+)
+
+MANIFEST_SCRIPT_KEY = re.compile(
+    r'^((?:client|server|shared)_scripts?)\s*',
+    re.MULTILINE
+)
+
+MANIFEST_MULTI_COMMENT = re.compile(
+    r'--\[\[[^\]]*\]\](?:--)?'
+)
+
+MANIFEST_SINGLE_COMMENT = re.compile(
+    r'--(?!\[\[).+$\r?\n',
+    re.MULTILINE
 )
 
 
@@ -116,19 +150,32 @@ class EventMatch:
             'emitNet',
         )
 
+def export_to_file(data: str, file: Path):
+    if file.is_file():
+        answer = input(f'{file!s} already exists, overwrite? [Y/n] ').strip().lower()
+        if answer and answer != 'y':
+            return False
 
-def file_suffix_filter(file: str):
-    _, _, suffix = file.rpartition('.')
-    return suffix in ('lua', 'js')
+    with file.open('w', encoding='utf-8', newline='\n') as fh:
+        fh.write(data)
 
+    return True
+
+def file_suffix_filter(files: List[Path], suffixes: List[str]):
+    for path in files:
+        if path.suffix in suffixes:
+            yield path
+
+def is_ignored_event(name: str, patterns: List[str]):
+    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 class CfxEventChecker:
     def __init__(
         self,
         path: str,
         debug: bool,
-        ignore: List[str],
-        ignore_dir: List[str],
+        ignore_events: List[str],
+        ignore_resource: List[str],
     ):
         self.handlers: Dict[str, Set[str]] = dict()
         self.emitters: Dict[str, Set[str]] = dict()
@@ -136,34 +183,115 @@ class CfxEventChecker:
         self.path = Path(path).resolve()
         self.debug = debug
 
-        self.ignores = list(dict.fromkeys(IGNORED_EVENTS + ignore))
-        self.ignores_dirs = list(dict.fromkeys(IGNORED_FOLDER_NAMES + ignore_dir))
+        self.ignored_events: List[str] = list(dict.fromkeys(IGNORED_EVENTS + ignore_events))
+        self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resource))
 
     def debug_print(self, *args, **kwargs):
         if self.debug:
             print(*args, **kwargs)
 
-    def process(self):
-        for root, dirs, files in os.walk(self.path):
-            ignored_dirs = [folder for folder in self.ignores_dirs if folder in dirs]
-            for folder in ignored_dirs:
-                dirs.remove(folder)
-                self.debug_print(f'>>> skipping {folder}')
+    def parse_resource_manifest(self, manifest_path: Path) -> List[Path]:
+        files: List[Path] = []
 
-            for file in filter(file_suffix_filter, files):
-                cur_path = Path(root, file)
-                # self.debug_print(cur_path)
-                suffix = cur_path.suffix
-                if suffix == '.lua':
-                    self.process_file(cur_path, LUA_EVENTS)
-                elif suffix == '.js':
-                    self.process_file(cur_path, JS_EVENTS)
+        resource_path: Path = manifest_path.parent
+        resource_name = resource_path.name
+
+        if resource_name in self.ignored_resources:
+            self.debug_print(f'# skipping resource {resource_name}')
+            return []
+
+        # if this manifest file is in a `[name]` folder, filter it out
+        if re.fullmatch(CATEGORY_FOLDER, resource_name):
+            self.debug_print(f'# skipping resource {resource_name}')
+            return []
+
+        try:
+            contents = manifest_path.read_text('utf-8')
+        except Exception as error:
+            print(f'#[ERROR]# Unable to read {manifest_path!s}: {error}')
+            return []
+
+        temp_files: List[str] = []
+
+        # remove all multiline comments
+        contents = re.sub(MANIFEST_MULTI_COMMENT, '', contents)
+        # remove single line comments
+        contents = re.sub(MANIFEST_SINGLE_COMMENT, '', contents)
+
+        for match in re.finditer(MANIFEST_SCRIPT_KEY, contents):
+            # start of value
+            start = match.end()
+
+            # client_script('client.lua')
+            # client_scripts({\n'client.lua'\n"main.lua"})
+            if contents[start] == '(':
+                istart = start + 1
+                iend = contents.find(')', istart)
+                if contents[istart] == '{':
+                    istart += 1
+                    iend = contents.index('}', istart)
+                    values = ast.literal_eval('[' + contents[istart:iend] + ']')
+                    temp_files.extend(values)
+                else:
+                    value = ast.literal_eval(contents[istart:iend])
+                    temp_files.append(value)
+                continue
+
+            # client_script 'client.lua'
+            # server_script "main.lua"
+            if contents[start] in ("'", '"'):
+                istart = start + 1
+                iend = contents.index(contents[start], istart)
+                value = contents[istart:iend]
+                temp_files.append(value)
+                continue
+
+            # client_scripts {\n'client.lua'\n"main.lua"}
+            if contents[start] == '{':
+                istart = start + 1
+                iend = contents.index('}', istart)
+                values = ast.literal_eval('[' + contents[istart:iend] + ']')
+                temp_files.extend(values)
+                continue
+
+            # Unhandled cases
+            raise ValueError(f'Error: Unhandled match in {manifest_path.relative_to(self.path).as_posix()}\n{match}')
+
+        for value in temp_files:
+            if value.startswith('@'):
+                continue
+
+            # Filter files by extensions
+            files += file_suffix_filter(
+                resource_path.glob(value),
+                ('.lua', '.js')
+            )
+
+        return files
+
+    def process(self):
+        manifests: List[Path] = [
+            *self.path.rglob('fxmanifest.lua'),
+            *self.path.rglob('__resource.lua'),
+        ]
+
+        for manifest_path in manifests:
+            self.debug_print(f'>>> Found manifest: {manifest_path.relative_to(self.path).as_posix()}')
+
+            for cur_path in self.parse_resource_manifest(manifest_path):
+                self.debug_print(f'>>> Processing file: {cur_path.relative_to(self.path).as_posix()}')
+
+                event_patterns = {
+                    '.lua': LUA_EVENTS,
+                    '.js': JS_EVENTS,
+                }
+                self.process_file(cur_path, event_patterns.get(cur_path.suffix))
 
     def process_file(self, file: Path, pattern: re.Pattern):
         try:
             contents = file.read_text('utf-8')
         except Exception as error:
-            self.debug_print(f'>>> Unable to read {str(file)}')
+            print(f'#[ERROR]# Unable to read {file!s}: {error}')
             return
 
         for match in re.finditer(pattern, contents):
@@ -173,7 +301,7 @@ class CfxEventChecker:
         resource_path = file.relative_to(self.path).as_posix()
         result = EventMatch(match)
 
-        if result.event_name in self.ignores:
+        if is_ignored_event(result.event_name, self.ignored_events):
             self.debug_print(f'>>> skipping IGNORED event {result.event_name}')
             return
 
@@ -187,34 +315,63 @@ class CfxEventChecker:
             if result.event_name in self.emitters:
                 self.emitters[result.event_name].add(resource_path)
             else:
-                self.emitters[result.event_name] = set()
+                self.emitters[result.event_name] = {resource_path}
 
         # self.debug_print(f'File: {resource_path} | Is: {result.function} | Event: {result.event_name}')
 
-    def results(self):
+    def results(self, out: str):
+        data: List[str] = []
         for event_name, resources in self.handlers.items():
             if event_name not in self.emitters:
-                paths = '   # ' + '\n   # '.join(resources)
-                print(f'>> {event_name}\n{paths}')
+                paths = '   @ ' + '\n   @ '.join(resources)
+                data.append(f'>> {event_name}\n{paths}')
+
+        info = '\n'.join(data)
+        if out:
+            out_path = Path(out)
+            export_to_file(info + '\n', out_path)
+            print(f'Results written to: {out_path!s}')
+        elif info:
+            print(info)
+
+    def results_reverse(self, out: str):
+        data: List[str] = []
+        for event_name, resources in self.emitters.items():
+            if event_name not in self.handlers:
+                paths = '   @ ' + '\n   @ '.join(resources)
+                data.append(f'>> {event_name}\n{paths}')
+
+        info = '\n'.join(data)
+        if out:
+            out_path = Path(out)
+            export_to_file(info + '\n', out_path)
+            print(f'Results written to: {out_path!s}')
+        elif info:
+            print(info)
 
 
 def main(raw_args=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('path', help='Path to server resources folder')
+    parser = argparse.ArgumentParser(description='Look for possible non-emitted/non-triggered events')
+    parser.add_argument('-o', '--out', help='Dump result to file')
+    parser.add_argument('-r', '--reverse', action='store_true', help='Look for possible non-handled event emitters/triggers instead')
     parser.add_argument('-d', '--debug', action='store_true')
-    parser.add_argument('-i', '--ignore', action='append', default=[], help='Add event name to ignore list')
-    parser.add_argument('-id', '--ignore-dir', action='append', default=[], help='Add folder name to ignore list')
+    parser.add_argument('-i', '--ignore', action='append', default=[], help='Add event name to ignore list (can use globbing - * ?)')
+    parser.add_argument('-ir', '--ignore-resource', action='append', default=[], help='Add resource name to ignore list (no globbing support)')
+    parser.add_argument('path', help='Path to server resources folder')
 
     args = parser.parse_args(raw_args)
 
     app = CfxEventChecker(
         path=args.path,
         debug=args.debug,
-        ignore=args.ignore,
-        ignore_dir=args.ignore_dir,
+        ignore_events=args.ignore,
+        ignore_resource=args.ignore_resource,
     )
     app.process()
-    app.results()
+    if args.reverse:
+        app.results_reverse(args.out)
+    else:
+        app.results(args.out)
 
 
 if __name__ == '__main__':
