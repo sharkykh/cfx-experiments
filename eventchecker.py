@@ -154,6 +154,13 @@ class EventMatch:
             'emitNet',
         )
 
+    @property
+    def is_net_event_register(self) -> bool:
+        return self.function == 'RegisterNetEvent'
+
+    def is_ignored_event(self, ignored_events: List[str]) -> bool:
+        return any(fnmatch.fnmatch(self.event_name, pattern) for pattern in ignored_events)
+
 def export_to_file(data: str, file: Path):
     if file.is_file():
         answer = input(f'{file!s} already exists, overwrite? [Y/n] ').strip().lower()
@@ -169,9 +176,6 @@ def file_suffix_filter(files: List[Path], suffixes: List[str]):
     for path in files:
         if path.suffix in suffixes:
             yield path
-
-def is_ignored_event(name: str, patterns: List[str]):
-    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 def is_ignored_path(manifest: Path, paths: List[str]):
     return any(path in manifest.parents for path in paths)
@@ -319,7 +323,7 @@ class CfxEventChecker:
         resource_path = file.relative_to(self.path).as_posix()
         result = EventMatch(match)
 
-        if is_ignored_event(result.event_name, self.ignored_events):
+        if result.is_ignored_event(self.ignored_events):
             self.debug_print(f'>>> skipping IGNORED event {result.event_name}')
             return
 
