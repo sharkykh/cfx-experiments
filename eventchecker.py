@@ -114,13 +114,18 @@ MANIFEST_SCRIPT_KEY = re.compile(
     re.MULTILINE
 )
 
-MANIFEST_MULTI_COMMENT = re.compile(
+LUA_MULTI_COMMENT = re.compile(
     r'--\[\[[^\]]*\]\](?:--)?'
 )
 
-MANIFEST_SINGLE_COMMENT = re.compile(
+LUA_SINGLE_COMMENT = re.compile(
     r'--(?!\[\[).+$\r?\n',
     re.MULTILINE
+)
+
+JS_COMMENTS = re.compile(
+    r'(?:(?:^|\s)\/\/(.+?)$)|(?:\/\*(.*?)\*\/)',
+    re.MULTILINE | re.DOTALL
 )
 
 
@@ -230,9 +235,9 @@ class CfxEventChecker:
         temp_files: List[str] = []
 
         # remove all multiline comments
-        contents = re.sub(MANIFEST_MULTI_COMMENT, '', contents)
+        contents = re.sub(LUA_MULTI_COMMENT, '', contents)
         # remove single line comments
-        contents = re.sub(MANIFEST_SINGLE_COMMENT, '', contents)
+        contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
 
         for match in re.finditer(MANIFEST_SCRIPT_KEY, contents):
             # start of value
@@ -303,24 +308,38 @@ class CfxEventChecker:
             for cur_path in self.parse_resource_manifest(manifest_path):
                 self.debug_print(f'>>> Processing file: {cur_path.relative_to(self.path).as_posix()}')
 
-                event_patterns = {
-                    '.lua': LUA_EVENTS,
-                    '.js': JS_EVENTS,
-                }
-                self.process_file(cur_path, event_patterns.get(cur_path.suffix))
+                self.process_file(cur_path)
 
-    def process_file(self, file: Path, pattern: re.Pattern):
+    def process_file(self, path: Path):
         try:
-            contents = file.read_text('utf-8')
+            contents = path.read_text('utf-8')
         except Exception as error:
-            print(f'#[ERROR]# Unable to read {file!s}: {error}')
+            print(f'#[ERROR]# Unable to read {path!s}: {error}')
             return
 
-        for match in re.finditer(pattern, contents):
-            self.process_match(match, file)
+        suffix = path.suffix
 
-    def process_match(self, match: re.Match, file: Path):
-        resource_path = file.relative_to(self.path).as_posix()
+        if suffix == '.lua':
+            pattern = LUA_EVENTS
+
+            # remove all multiline comments
+            contents = re.sub(LUA_MULTI_COMMENT, '', contents)
+            # remove single line comments
+            contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
+
+        elif suffix == '.js':
+            pattern = JS_EVENTS
+
+            # remove all comments
+            contents = re.sub(JS_COMMENTS, '', contents)
+        else:
+            raise ValueError('Unsupported file type')
+
+        for match in re.finditer(pattern, contents):
+            self.process_match(match, path)
+
+    def process_match(self, match: re.Match, path: Path):
+        resource_path = path.relative_to(self.path).as_posix()
         result = EventMatch(match)
 
         if result.is_ignored_event(self.ignored_events):
