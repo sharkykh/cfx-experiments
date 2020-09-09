@@ -85,21 +85,40 @@ IGNORED_EVENTS = [
 #   TriggerClientEvent
 #   TriggerServerEvent
 #   RegisterNetEvent
+#       RegisterServerEvent
 
 LUA_EVENTS = re.compile(
-    r'(?:^|[ \t]+)(?P<func>AddEventHandler|Trigger(?:Client|Server)?Event|RegisterNetEvent)'
+    r'(?:^|[ \t]+)(?P<func>'
+        r'AddEventHandler|Trigger(?:Client|Server)?Event'
+        r'|Register(?:Net|Server)Event'
+    r')'
     r'\(\s*["\'](?P<event>[^"\']+)["\']\s*[,)]',
     re.MULTILINE
 )
 
 # JS events:
-#   emit
-#   emitNet
 #   on
+#       addEventListener
+#       AddEventHandler
 #   onNet
+#       addNetEventListener
+#   emit
+#       TriggerEvent
+#   emitNet
+#       TriggerClientEvent
+#       TriggerServerEvent
+#       TriggerLatentClientEvent
+#       TriggerLatentServerEvent
+#   RegisterNetEvent
+#       RegisterServerEvent
 
 JS_EVENTS = re.compile(
-    r'(?:^|[ \t]+)(?P<func>on|onNet|emit|emitNet)'
+    r'(?:^|[ \t]+)(?P<func>'
+        r'on|onNet|emit|emitNet'
+        r'|add(?:Net)?EventListener|AddEventHandler'
+        r'|Trigger(?:(?:Latent)?(?:Client|Server))?Event'
+        r'|Register(?:Net|Server)Event'
+    r')'
     r'\(\s*["\'](?P<event>[^"\']+)["\']\s*[,)]',
     re.MULTILINE
 )
@@ -147,6 +166,8 @@ class EventMatch:
             'AddEventHandler',
             'on',
             'onNet',
+            'addEventListener',
+            'addNetEventListener',
         )
 
     @property
@@ -157,11 +178,16 @@ class EventMatch:
             'TriggerServerEvent',
             'emit',
             'emitNet',
+            'TriggerLatentClientEvent',
+            'TriggerLatentServerEvent',
         )
 
     @property
     def is_net_event_register(self) -> bool:
-        return self.function == 'RegisterNetEvent'
+        return self.function in (
+            'RegisterNetEvent',
+            'RegisterServerEvent',
+        )
 
     def is_ignored_event(self, ignored_events: List[str]) -> bool:
         return any(fnmatch.fnmatch(self.event_name, pattern) for pattern in ignored_events)
