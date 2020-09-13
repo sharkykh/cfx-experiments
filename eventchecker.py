@@ -133,8 +133,9 @@ MANIFEST_SCRIPT_KEY = re.compile(
     re.MULTILINE
 )
 
-LUA_MULTI_COMMENT = re.compile(
-    r'--\[\[[^\]]*\]\](?:--)?'
+LUA_BLOCK_COMMENT = re.compile(
+    r'--\[\[.*?\]\](?:--)?',
+    re.DOTALL
 )
 
 LUA_SINGLE_COMMENT = re.compile(
@@ -151,6 +152,10 @@ JS_COMMENTS = re.compile(
 class EventMatch:
     def __init__(self, match: re.Match):
         self.data: Dict[str, str] = match.groupdict()
+        self.locations: Dict[Path, int] = {}
+
+    def add(self, path: Path, line: int):
+        self.locations[path] = line
 
     @property
     def function(self) -> str:
@@ -192,6 +197,13 @@ class EventMatch:
     def is_ignored_event(self, ignored_events: List[str]) -> bool:
         return any(fnmatch.fnmatch(self.event_name, pattern) for pattern in ignored_events)
 
+    @property
+    def formatted_paths(self) -> str:
+        return '\n'.join(
+            f'{path!s}:{line}'
+            for path, line in self.locations.items()
+        )
+
 def export_to_file(data: str, file: Path):
     if file.is_file():
         answer = input(f'{file!s} already exists, overwrite? [Y/n] ').strip().lower()
@@ -220,8 +232,9 @@ class CfxEventChecker:
         ignore_resources: List[str],
         ignore_paths: List[str],
     ):
-        self.handlers: Dict[str, Set[str]] = dict()
-        self.emitters: Dict[str, Set[str]] = dict()
+        self.handlers: Dict[str, EventMatch] = dict()
+        self.emitters: Dict[str, EventMatch] = dict()
+        self.registers: Dict[str, EventMatch] = dict()
 
         self.path = Path(path).resolve()
         self.debug = debug
@@ -260,8 +273,8 @@ class CfxEventChecker:
 
         temp_files: List[str] = []
 
-        # remove all multiline comments
-        contents = re.sub(LUA_MULTI_COMMENT, '', contents)
+        # remove all block comments
+        contents = re.sub(LUA_BLOCK_COMMENT, '', contents)
         # remove single line comments
         contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
 
@@ -302,7 +315,8 @@ class CfxEventChecker:
                 continue
 
             # Unhandled cases
-            raise ValueError(f'Error: Unhandled match in {manifest_path.relative_to(self.path).as_posix()}\n{match}')
+            rel_path = manifest_path.relative_to(self.path).as_posix()
+            raise ValueError(f'Error: Unhandled match in {rel_path}\n{match}')
 
         for value in temp_files:
             if value.startswith('@'):
@@ -348,24 +362,28 @@ class CfxEventChecker:
         if suffix == '.lua':
             pattern = LUA_EVENTS
 
-            # remove all multiline comments
-            contents = re.sub(LUA_MULTI_COMMENT, '', contents)
+            # remove all block comments
+            contents = re.sub(LUA_BLOCK_COMMENT, self.comment_replace, contents)
             # remove single line comments
-            contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
+            contents = re.sub(LUA_SINGLE_COMMENT, self.comment_replace, contents)
 
         elif suffix == '.js':
             pattern = JS_EVENTS
 
             # remove all comments
-            contents = re.sub(JS_COMMENTS, '', contents)
+            contents = re.sub(JS_COMMENTS, self.comment_replace, contents)
         else:
             raise ValueError('Unsupported file type')
 
+        line_map = [m.end() for m in re.finditer(r'.*(\n|$)', contents)]
         for match in re.finditer(pattern, contents):
-            self.process_match(match, path)
+            for line_no, pos in enumerate(line_map, 1):
+                if pos > match.start():
+                    break
 
-    def process_match(self, match: re.Match, path: Path):
-        resource_path = path.relative_to(self.path).as_posix()
+            self.process_match(match, path, line_no)
+
+    def process_match(self, match: re.Match, resource_path: Path, line_no: int):
         result = EventMatch(match)
 
         if result.is_ignored_event(self.ignored_events):
@@ -373,45 +391,67 @@ class CfxEventChecker:
             return
 
         if result.is_event_handler:
-            if result.event_name in self.handlers:
-                self.handlers[result.event_name].add(resource_path)
-            else:
-                self.handlers[result.event_name] = {resource_path}
+            if result.event_name not in self.handlers:
+                self.handlers[result.event_name] = result
+
+            self.handlers[result.event_name].add(resource_path, line_no)
 
         if result.is_event_emitter:
-            if result.event_name in self.emitters:
-                self.emitters[result.event_name].add(resource_path)
-            else:
-                self.emitters[result.event_name] = {resource_path}
+            if result.event_name not in self.emitters:
+                self.emitters[result.event_name] = result
+
+            self.emitters[result.event_name].add(resource_path, line_no)
+
+        if result.is_net_event_register:
+            if result.event_name not in self.registers:
+                self.registers[result.event_name] = result
+
+            self.registers[result.event_name].add(resource_path, line_no)
 
         # self.debug_print(f'File: {resource_path} | Is: {result.function} | Event: {result.event_name}')
 
-    def results(self, out: str):
+    @staticmethod
+    def comment_replace(match: re.Match):
+        return '\n' * match.group(0).count('\n')
+
+    def results(self, out: str, triggers: bool):
         data: List[str] = []
-        for event_name, resources in self.handlers.items():
-            if event_name not in self.emitters:
-                paths = '   @ ' + '\n   @ '.join(resources)
-                data.append(f'>> {event_name}\n{paths}')
+
+        if triggers:
+            data += [
+                'Listing file paths for triggered events,',
+                'that **possibly** do not have defined handlers anywhere',
+            ]
+
+            check = self.emitters.values()
+            compare = self.handlers
+        else:
+            data += [
+                'Listing file paths for events that have defined handlers,',
+                'and are **possibly** not triggered anywhere',
+            ]
+
+            check = self.handlers.values()
+            compare = self.emitters
+
+        data += [
+            '**Tip:** Copy path line, Ctrl+P and paste to quickly jump to location',
+            '',
+        ]
+
+        for match in check:
+            if match.event_name not in compare:
+                data += [
+                    f'# {match.event_name}',
+                    match.formatted_paths,
+                    '',
+                ]
+
 
         info = '\n'.join(data)
         if out:
             out_path = Path(out)
-            export_to_file(info + '\n', out_path)
-            print(f'Results written to: {out_path!s}')
-        elif info:
-            print(info)
-
-    def results_reverse(self, out: str):
-        data: List[str] = []
-        for event_name, resources in self.emitters.items():
-            if event_name not in self.handlers:
-                paths = '   @ ' + '\n   @ '.join(resources)
-                data.append(f'>> {event_name}\n{paths}')
-
-        info = '\n'.join(data)
-        if out:
-            out_path = Path(out)
-            export_to_file(info + '\n', out_path)
+            export_to_file(info, out_path)
             print(f'Results written to: {out_path!s}')
         elif info:
             print(info)
@@ -443,10 +483,7 @@ def main(raw_args=None):
         ignore_paths=args.ignore_path,
     )
     app.process()
-    if args.reverse:
-        app.results_reverse(args.out)
-    else:
-        app.results(args.out)
+    app.results(args.out, args.reverse)
 
 
 if __name__ == '__main__':
