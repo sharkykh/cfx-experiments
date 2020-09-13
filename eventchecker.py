@@ -1,3 +1,10 @@
+# config: utf-8
+"""
+Script that scans FXServer resources in search of possible non-emitted/non-triggered events.
+
+https://gist.github.com/sharkykh/e57ba52e70c8d1f060cf5c952fff9b75
+"""
+
 import argparse
 import ast
 import fnmatch
