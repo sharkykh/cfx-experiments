@@ -158,13 +158,26 @@ JS_COMMENTS = re.compile(
 )
 
 
+class LocationInfo:
+    def __init__(self, path: Path, line: int, script_type: str):
+        self.path: Path = path
+        self.line: int = line
+        self.script_type: str = script_type
+
+    def __str__(self):
+        return f'{self.path!s}:{self.line}'
+
 class EventMatch:
     def __init__(self, match: re.Match):
         self.data: Dict[str, str] = match.groupdict()
-        self.locations: Dict[Path, Tuple[int, str]] = {}
+        self.locations: Dict[Path, LocationInfo] = {}
 
     def add(self, path: Path, line: int, script_type: str):
-        self.locations[path] = (line, script_type)
+        self.locations[path] = LocationInfo(
+            path=path,
+            line=line,
+            script_type=script_type,
+        )
 
     @property
     def function(self) -> str:
@@ -209,8 +222,7 @@ class EventMatch:
     @property
     def formatted_paths(self) -> str:
         return '\n'.join(
-            f'{path!s}:{line}'
-            for path, (line, script_type) in self.locations.items()
+            map(str, self.locations.values())
         )
 
 def export_to_file(data: str, file: Path):
