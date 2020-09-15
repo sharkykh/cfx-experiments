@@ -138,7 +138,7 @@ CATEGORY_FOLDER = re.compile(
 )
 
 MANIFEST_SCRIPT_KEY = re.compile(
-    r'^(?:(client|server|shared)_scripts?)\s*',
+    r'(?:^|[ \t]+)(?:(client|server|shared)_scripts?)\s*',
     re.MULTILINE
 )
 
