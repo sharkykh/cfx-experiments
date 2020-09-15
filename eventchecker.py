@@ -11,8 +11,10 @@ import fnmatch
 import re
 from typing import (
     Dict,
+    Iterable,
     List,
     Set,
+    Tuple,
 )
 
 from pathlib import Path
@@ -136,7 +138,7 @@ CATEGORY_FOLDER = re.compile(
 )
 
 MANIFEST_SCRIPT_KEY = re.compile(
-    r'^((?:client|server|shared)_scripts?)\s*',
+    r'^(?:(client|server|shared)_scripts?)\s*',
     re.MULTILINE
 )
 
@@ -159,10 +161,10 @@ JS_COMMENTS = re.compile(
 class EventMatch:
     def __init__(self, match: re.Match):
         self.data: Dict[str, str] = match.groupdict()
-        self.locations: Dict[Path, int] = {}
+        self.locations: Dict[Path, Tuple[int, str]] = {}
 
-    def add(self, path: Path, line: int):
-        self.locations[path] = line
+    def add(self, path: Path, line: int, script_type: str):
+        self.locations[path] = (line, script_type)
 
     @property
     def function(self) -> str:
@@ -208,7 +210,7 @@ class EventMatch:
     def formatted_paths(self) -> str:
         return '\n'.join(
             f'{path!s}:{line}'
-            for path, line in self.locations.items()
+            for path, (line, script_type) in self.locations.items()
         )
 
 def export_to_file(data: str, file: Path):
@@ -222,7 +224,7 @@ def export_to_file(data: str, file: Path):
 
     return True
 
-def file_suffix_filter(files: List[Path], suffixes: List[str]):
+def file_suffix_filter(files: Iterable[Path], suffixes: Iterable[str]) -> Iterable[Path]:
     for path in files:
         if path.suffix in suffixes:
             yield path
@@ -257,8 +259,8 @@ class CfxEventChecker:
         if self.debug:
             print(*args, **kwargs)
 
-    def parse_resource_manifest(self, manifest_path: Path) -> List[Path]:
-        files: List[Path] = []
+    def parse_resource_manifest(self, manifest_path: Path) -> List[Tuple[Path, str]]:
+        files: List[Tuple[Path, str]] = []
 
         resource_path: Path = manifest_path.parent
         resource_name = resource_path.name
@@ -278,7 +280,7 @@ class CfxEventChecker:
             print(f'#[ERROR]# Unable to read {manifest_path!s}: {error}')
             return []
 
-        temp_files: List[str] = []
+        temp_files: List[Tuple[str, str]] = []
 
         # remove all block comments
         contents = re.sub(LUA_BLOCK_COMMENT, '', contents)
@@ -286,6 +288,8 @@ class CfxEventChecker:
         contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
 
         for match in re.finditer(MANIFEST_SCRIPT_KEY, contents):
+            # script_type (client / server / shared)
+            script_type = match.group(1)
             # start of value
             start = match.end()
 
@@ -298,10 +302,12 @@ class CfxEventChecker:
                     istart += 1
                     iend = contents.index('}', istart)
                     values = ast.literal_eval('[' + contents[istart:iend] + ']')
-                    temp_files.extend(values)
+                    temp_files.extend(
+                        ((v, script_type) for v in values)
+                    )
                 else:
                     value = ast.literal_eval(contents[istart:iend])
-                    temp_files.append(value)
+                    temp_files.append((value, script_type))
                 continue
 
             # client_script 'client.lua'
@@ -310,7 +316,7 @@ class CfxEventChecker:
                 istart = start + 1
                 iend = contents.index(contents[start], istart)
                 value = contents[istart:iend]
-                temp_files.append(value)
+                temp_files.append((value, script_type))
                 continue
 
             # client_scripts {\n'client.lua'\n"main.lua"}
@@ -318,22 +324,25 @@ class CfxEventChecker:
                 istart = start + 1
                 iend = contents.index('}', istart)
                 values = ast.literal_eval('[' + contents[istart:iend] + ']')
-                temp_files.extend(values)
+                temp_files.extend(
+                    ((v, script_type) for v in values)
+                )
                 continue
 
             # Unhandled cases
             rel_path = manifest_path.relative_to(self.path).as_posix()
             raise ValueError(f'Error: Unhandled match in {rel_path}\n{match}')
 
-        for value in temp_files:
+        for value, script_type in temp_files:
             if value.startswith('@'):
                 continue
 
             # Filter files by extensions
-            files += file_suffix_filter(
+            expanded = file_suffix_filter(
                 resource_path.glob(value),
                 ('.lua', '.js')
             )
+            files += ((v, script_type) for v in expanded)
 
         return files
 
@@ -352,12 +361,12 @@ class CfxEventChecker:
 
             self.debug_print(f'>>> Found manifest: {rel_path.as_posix()}')
 
-            for cur_path in self.parse_resource_manifest(manifest_path):
-                self.debug_print(f'>>> Processing file: {cur_path.relative_to(self.path).as_posix()}')
+            for cur_path, script_type in self.parse_resource_manifest(manifest_path):
+                self.debug_print(f'>>> Processing {script_type} file: {cur_path.relative_to(self.path).as_posix()}')
 
-                self.process_file(cur_path)
+                self.process_file(cur_path, script_type)
 
-    def process_file(self, path: Path):
+    def process_file(self, path: Path, script_type: str):
         try:
             contents = path.read_text('utf-8')
         except Exception as error:
@@ -388,9 +397,9 @@ class CfxEventChecker:
                 if pos > match.start():
                     break
 
-            self.process_match(match, path, line_no)
+            self.process_match(match, path, line_no, script_type)
 
-    def process_match(self, match: re.Match, resource_path: Path, line_no: int):
+    def process_match(self, match: re.Match, resource_path: Path, line_no: int, script_type: str):
         result = EventMatch(match)
 
         if result.is_ignored_event(self.ignored_events):
@@ -401,21 +410,21 @@ class CfxEventChecker:
             if result.event_name not in self.handlers:
                 self.handlers[result.event_name] = result
 
-            self.handlers[result.event_name].add(resource_path, line_no)
+            self.handlers[result.event_name].add(resource_path, line_no, script_type)
 
         if result.is_event_emitter:
             if result.event_name not in self.emitters:
                 self.emitters[result.event_name] = result
 
-            self.emitters[result.event_name].add(resource_path, line_no)
+            self.emitters[result.event_name].add(resource_path, line_no, script_type)
 
         if result.is_net_event_register:
             if result.event_name not in self.registers:
                 self.registers[result.event_name] = result
 
-            self.registers[result.event_name].add(resource_path, line_no)
+            self.registers[result.event_name].add(resource_path, line_no, script_type)
 
-        # self.debug_print(f'File: {resource_path} | Is: {result.function} | Event: {result.event_name}')
+        # self.debug_print(f'File: {resource_path} [{script_type}] | Is: {result.function} | Event: {result.event_name}')
 
     @staticmethod
     def comment_replace(match: re.Match):
