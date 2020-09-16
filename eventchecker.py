@@ -9,6 +9,7 @@ import argparse
 import ast
 import fnmatch
 import re
+from pathlib import Path
 from typing import (
     Dict,
     Iterable,
@@ -16,8 +17,6 @@ from typing import (
     Set,
     Tuple,
 )
-
-from pathlib import Path
 
 # A list of ignored paths (can be used to ignore complete folders), no glob support
 IGNORED_PATHS = [
@@ -155,6 +154,10 @@ LUA_SINGLE_COMMENT = re.compile(
 JS_COMMENTS = re.compile(
     r'(?:(?:^|\s)\/\/(.+?)$)|(?:\/\*(.*?)\*\/)',
     re.MULTILINE | re.DOTALL
+)
+
+LINE_MAP_REGEX = re.compile(
+    r'.*(\n|$)'
 )
 
 
@@ -403,7 +406,7 @@ class CfxEventChecker:
         else:
             raise ValueError('Unsupported file type')
 
-        line_map = [m.end() for m in re.finditer(r'.*(\n|$)', contents)]
+        line_map = [m.end() for m in re.finditer(LINE_MAP_REGEX, contents)]
         for match in re.finditer(pattern, contents):
             for line_no, pos in enumerate(line_map, 1):
                 if pos > match.start():
@@ -493,11 +496,11 @@ def main(raw_args=None):
                         help='Look for possible non-handled event emitters/triggers instead')
     parser.add_argument('-d', '--debug', action='store_true')
     parser.add_argument('-i', '--ignore', action='append', default=[],
-                        help='Add event name to ignore list (can use globbing - * ?)')
+                        help='Add event name to ignored events (can use globbing - * ?)')
     parser.add_argument('-ir', '--ignore-resource', action='append', default=[],
-                        help='Add resource name to ignore list (no globbing support)')
+                        help='Add resource name to ignored resources (no globbing support)')
     parser.add_argument('-ip', '--ignore-path', action='append', default=[],
-                        help='Add an ignored path to ignore list - can be used to ignore complete folders (no globbing support)')
+                        help='Add path to ignored paths - can be used to ignore complete folders (no globbing support)')
     parser.add_argument('path',
                         help='Path to server resources folder')
 
