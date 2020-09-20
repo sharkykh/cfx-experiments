@@ -136,11 +136,6 @@ CATEGORY_FOLDER = re.compile(
     r'\[[^\]]+\]'
 )
 
-MANIFEST_SCRIPT_KEY = re.compile(
-    r'(?:^|[ \t]+)(?:(client|server|shared)_scripts?)\s*',
-    re.MULTILINE
-)
-
 LUA_BLOCK_COMMENT = re.compile(
     r'--\[\[.*?\]\](?:--)?',
     re.DOTALL
@@ -254,6 +249,107 @@ class EventMatch:
             map(str, self.locations.values())
         )
 
+class CfxResource:
+    MANIFEST_SCRIPT_KEY = re.compile(
+        r'(?:^|[ \t]+)(?:(client|server|shared)_scripts?)\s*',
+        re.MULTILINE
+    )
+
+    def __init__(self, manifest_path: Path, base_path: Path):
+        self.manifest: Path = manifest_path.resolve()
+        self.base_path: Path = base_path
+
+        self.root: Path = self.manifest.parent
+        self.name: str = self.root.name
+        self.rel_path: Path = self.root.relative_to(self.base_path)
+
+    def _parse_values(self, contents: str) -> Iterable[str]:
+        # client_script('client.lua')
+        # client_scripts({\n'client.lua'\n"main.lua"})
+        if contents[0] == '(':
+            istart = 1
+            iend = contents.find(')', istart)
+            if contents[istart] == '{':
+                istart += 1
+                iend = contents.index('}', istart)
+                values = ast.literal_eval('[' + contents[istart:iend] + ']')
+                yield from values
+            else:
+                value = ast.literal_eval(contents[istart:iend])
+                yield value
+            return
+
+        # client_script 'client.lua'
+        # server_script "main.lua"
+        if contents[0] in ("'", '"'):
+            istart = 1
+            iend = contents.index(contents[0], istart)
+            value = contents[istart:iend]
+            yield value
+            return
+
+        # client_scripts {\n'client.lua'\n"main.lua"}
+        if contents[0] == '{':
+            istart = 1
+            iend = contents.index('}', istart)
+            values = ast.literal_eval('[' + contents[istart:iend] + ']')
+            yield from values
+            return
+
+        # Unhandled match
+        raise ValueError
+
+    def parse_manifest(self) -> List[Tuple[Path, str]]:
+        files: List[Tuple[Path, str]] = []
+
+        try:
+            contents = self.manifest.read_text('utf-8')
+        except Exception as error:
+            print(f'#[ERROR]# Unable to read {self.manifest!s}: {error}')
+            return []
+
+        temp_files: List[Tuple[str, str]] = []
+
+        # remove all block comments
+        contents = re.sub(LUA_BLOCK_COMMENT, '', contents)
+        # remove single line comments
+        contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
+
+        for match in re.finditer(self.MANIFEST_SCRIPT_KEY, contents):
+            # script_type (client / server / shared)
+            script_type = match.group(1)
+            # start of value
+            start = match.end()
+
+            values_gen = self._parse_values(contents[start:])
+
+            try:
+                temp_files += (
+                    (v, script_type) for v in values_gen
+                )
+            except ValueError as error:
+                rel_path = self.manifest.relative_to(self.base_path).as_posix()
+                end = start + re.search(LINE_MAP_REGEX, contents[start:]).end()
+                raise ValueError(
+                    f'Error: Unhandled match in: {rel_path}'
+                    f'\n{match.group()}{contents[start:end]}'
+                )
+
+        for value, script_type in temp_files:
+            # Filter out dependencies
+            if value.startswith('@'):
+                continue
+
+            # Filter files by extensions
+            expanded = file_suffix_filter(
+                self.root.glob(value),
+                ('.lua', '.js')
+            )
+
+            files += ((path, script_type) for path in expanded)
+
+        return files
+
 class CfxEventChecker:
     def __init__(
         self,
@@ -275,93 +371,6 @@ class CfxEventChecker:
             in dict.fromkeys(IGNORED_PATHS + ignore_paths)
         ]
 
-    def parse_resource_manifest(self, manifest_path: Path) -> List[Tuple[Path, str]]:
-        files: List[Tuple[Path, str]] = []
-
-        resource_path: Path = manifest_path.parent
-        resource_name = resource_path.name
-
-        if resource_name in self.ignored_resources:
-            Debug.print(f'>>> skipping IGNORED resource {resource_name}')
-            return []
-
-        # if this manifest file is in a `[name]` folder, filter it out
-        if re.fullmatch(CATEGORY_FOLDER, resource_name):
-            Debug.print(f">>> skipping resource {resource_name} because it's in a category folder")
-            return []
-
-        try:
-            contents = manifest_path.read_text('utf-8')
-        except Exception as error:
-            print(f'#[ERROR]# Unable to read {manifest_path!s}: {error}')
-            return []
-
-        temp_files: List[Tuple[str, str]] = []
-
-        # remove all block comments
-        contents = re.sub(LUA_BLOCK_COMMENT, '', contents)
-        # remove single line comments
-        contents = re.sub(LUA_SINGLE_COMMENT, '', contents)
-
-        for match in re.finditer(MANIFEST_SCRIPT_KEY, contents):
-            # script_type (client / server / shared)
-            script_type = match.group(1)
-            # start of value
-            start = match.end()
-
-            # client_script('client.lua')
-            # client_scripts({\n'client.lua'\n"main.lua"})
-            if contents[start] == '(':
-                istart = start + 1
-                iend = contents.find(')', istart)
-                if contents[istart] == '{':
-                    istart += 1
-                    iend = contents.index('}', istart)
-                    values = ast.literal_eval('[' + contents[istart:iend] + ']')
-                    temp_files.extend(
-                        ((v, script_type) for v in values)
-                    )
-                else:
-                    value = ast.literal_eval(contents[istart:iend])
-                    temp_files.append((value, script_type))
-                continue
-
-            # client_script 'client.lua'
-            # server_script "main.lua"
-            if contents[start] in ("'", '"'):
-                istart = start + 1
-                iend = contents.index(contents[start], istart)
-                value = contents[istart:iend]
-                temp_files.append((value, script_type))
-                continue
-
-            # client_scripts {\n'client.lua'\n"main.lua"}
-            if contents[start] == '{':
-                istart = start + 1
-                iend = contents.index('}', istart)
-                values = ast.literal_eval('[' + contents[istart:iend] + ']')
-                temp_files.extend(
-                    ((v, script_type) for v in values)
-                )
-                continue
-
-            # Unhandled cases
-            rel_path = manifest_path.relative_to(self.path).as_posix()
-            raise ValueError(f'Error: Unhandled match in {rel_path}\n{match}')
-
-        for value, script_type in temp_files:
-            if value.startswith('@'):
-                continue
-
-            # Filter files by extensions
-            expanded = file_suffix_filter(
-                resource_path.glob(value),
-                ('.lua', '.js')
-            )
-            files += ((v, script_type) for v in expanded)
-
-        return files
-
     def process(self):
         manifests: List[Path] = [
             *self.path.rglob('fxmanifest.lua'),
@@ -369,15 +378,27 @@ class CfxEventChecker:
         ]
 
         for manifest_path in manifests:
-            rel_path = manifest_path.relative_to(self.path)
+            resource = CfxResource(
+                manifest_path=manifest_path,
+                base_path=self.path,
+            )
 
-            if is_ignored_path(rel_path, self.ignored_paths):
-                Debug.print(f'>>> skipping IGNORED path {rel_path.as_posix()}')
+            if is_ignored_path(resource.rel_path, self.ignored_paths):
+                Debug.print(f'>>> skipping IGNORED path {resource.rel_path.as_posix()}')
                 continue
 
-            Debug.print(f'>>> Found manifest: {rel_path.as_posix()}')
+            Debug.print(f'>>> Found manifest: {resource.rel_path.as_posix()}')
 
-            for cur_path, script_type in self.parse_resource_manifest(manifest_path):
+            if resource.name in self.ignored_resources:
+                Debug.print(f'>>> skipping IGNORED resource {resource.name}')
+                continue
+
+            # if this manifest file is in a `[name]` folder, filter it out
+            if re.fullmatch(CATEGORY_FOLDER, resource.name):
+                Debug.print(f">>> skipping resource {resource.name} because it's in a category folder")
+                continue
+
+            for cur_path, script_type in resource.parse_manifest():
                 Debug.print(f'>>> Processing {script_type} file: {cur_path.relative_to(self.path).as_posix()}')
 
                 self.process_file(cur_path, script_type)
