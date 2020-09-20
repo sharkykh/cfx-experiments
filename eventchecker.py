@@ -1,6 +1,7 @@
 # config: utf-8
 """
 Script that scans FXServer resources in search of possible non-emitted/non-triggered events.
+Requires Python 3.7+
 
 https://gist.github.com/sharkykh/e57ba52e70c8d1f060cf5c952fff9b75
 """
@@ -131,7 +132,6 @@ JS_EVENTS = re.compile(
     re.MULTILINE
 )
 
-
 CATEGORY_FOLDER = re.compile(
     r'\[[^\]]+\]'
 )
@@ -160,6 +160,32 @@ LINE_MAP_REGEX = re.compile(
     r'.*(\n|$)'
 )
 
+def export_to_file(data: str, file: Path):
+    if file.is_file():
+        answer = input(f'{file!s} already exists, overwrite? [Y/n] ').strip().lower()
+        if answer and answer != 'y':
+            return False
+
+    with file.open('w', encoding='utf-8', newline='\n') as fh:
+        fh.write(data)
+
+    return True
+
+def file_suffix_filter(files: Iterable[Path], suffixes: Iterable[str]) -> Iterable[Path]:
+    for path in files:
+        if path.suffix in suffixes:
+            yield path
+
+def is_ignored_path(rel_path: Path, paths: List[str]):
+    return any(path in rel_path.parents for path in paths)
+
+class Debug:
+    enabled: bool = False
+
+    @classmethod
+    def print(cls, *args, **kwargs):
+        if cls.enabled:
+            print(*args, **kwargs)
 
 class LocationInfo:
     def __init__(self, path: Path, line: int, script_type: str):
@@ -228,30 +254,10 @@ class EventMatch:
             map(str, self.locations.values())
         )
 
-def export_to_file(data: str, file: Path):
-    if file.is_file():
-        answer = input(f'{file!s} already exists, overwrite? [Y/n] ').strip().lower()
-        if answer and answer != 'y':
-            return False
-
-    with file.open('w', encoding='utf-8', newline='\n') as fh:
-        fh.write(data)
-
-    return True
-
-def file_suffix_filter(files: Iterable[Path], suffixes: Iterable[str]) -> Iterable[Path]:
-    for path in files:
-        if path.suffix in suffixes:
-            yield path
-
-def is_ignored_path(manifest: Path, paths: List[str]):
-    return any(path in manifest.parents for path in paths)
-
 class CfxEventChecker:
     def __init__(
         self,
         path: str,
-        debug: bool,
         ignore_events: List[str],
         ignore_resources: List[str],
         ignore_paths: List[str],
@@ -260,8 +266,7 @@ class CfxEventChecker:
         self.emitters: Dict[str, EventMatch] = dict()
         self.registers: Dict[str, EventMatch] = dict()
 
-        self.path = Path(path).resolve()
-        self.debug = debug
+        self.path: Path = Path(path).resolve()
 
         self.ignored_events: List[str] = list(dict.fromkeys(IGNORED_EVENTS + ignore_events))
         self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resources))
@@ -270,10 +275,6 @@ class CfxEventChecker:
             in dict.fromkeys(IGNORED_PATHS + ignore_paths)
         ]
 
-    def debug_print(self, *args, **kwargs):
-        if self.debug:
-            print(*args, **kwargs)
-
     def parse_resource_manifest(self, manifest_path: Path) -> List[Tuple[Path, str]]:
         files: List[Tuple[Path, str]] = []
 
@@ -281,12 +282,12 @@ class CfxEventChecker:
         resource_name = resource_path.name
 
         if resource_name in self.ignored_resources:
-            self.debug_print(f'>>> skipping IGNORED resource {resource_name}')
+            Debug.print(f'>>> skipping IGNORED resource {resource_name}')
             return []
 
         # if this manifest file is in a `[name]` folder, filter it out
         if re.fullmatch(CATEGORY_FOLDER, resource_name):
-            self.debug_print(f">>> skipping resource {resource_name} because it's in a category folder")
+            Debug.print(f">>> skipping resource {resource_name} because it's in a category folder")
             return []
 
         try:
@@ -371,13 +372,13 @@ class CfxEventChecker:
             rel_path = manifest_path.relative_to(self.path)
 
             if is_ignored_path(rel_path, self.ignored_paths):
-                self.debug_print(f'>>> skipping IGNORED path {rel_path.as_posix()}')
+                Debug.print(f'>>> skipping IGNORED path {rel_path.as_posix()}')
                 continue
 
-            self.debug_print(f'>>> Found manifest: {rel_path.as_posix()}')
+            Debug.print(f'>>> Found manifest: {rel_path.as_posix()}')
 
             for cur_path, script_type in self.parse_resource_manifest(manifest_path):
-                self.debug_print(f'>>> Processing {script_type} file: {cur_path.relative_to(self.path).as_posix()}')
+                Debug.print(f'>>> Processing {script_type} file: {cur_path.relative_to(self.path).as_posix()}')
 
                 self.process_file(cur_path, script_type)
 
@@ -418,7 +419,7 @@ class CfxEventChecker:
         result = EventMatch(match)
 
         if result.is_ignored_event(self.ignored_events):
-            self.debug_print(f'>>> skipping IGNORED event {result.event_name}')
+            Debug.print(f'>>> skipping IGNORED event {result.event_name}')
             return
 
         if result.is_event_handler:
@@ -439,7 +440,7 @@ class CfxEventChecker:
 
             self.registers[result.event_name].add(resource_path, line_no, script_type)
 
-        # self.debug_print(f'File: {resource_path} [{script_type}] | Is: {result.function} | Event: {result.event_name}')
+        # Debug.print(f'File: {resource_path} [{script_type}] | Is: {result.function} | Event: {result.event_name}')
 
     @staticmethod
     def comment_replace(match: re.Match):
@@ -506,9 +507,11 @@ def main(raw_args=None):
 
     args = parser.parse_args(raw_args)
 
+    # Set global debug level
+    Debug.enabled = args.debug
+
     app = CfxEventChecker(
         path=args.path,
-        debug=args.debug,
         ignore_events=args.ignore,
         ignore_resources=args.ignore_resource,
         ignore_paths=args.ignore_path,
