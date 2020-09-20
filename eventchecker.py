@@ -132,6 +132,11 @@ JS_EVENTS = re.compile(
     re.MULTILINE
 )
 
+CFG_KEY = re.compile(
+    r'(?P<command>[a-z]+)[ \t]+(?P<name>[a-z\d_.-]+)',
+    re.IGNORECASE
+)
+
 CATEGORY_FOLDER = re.compile(
     r'\[[^\]]+\]'
 )
@@ -350,10 +355,72 @@ class CfxResource:
 
         return files
 
+class CfxConfig:
+    def __init__(
+        self,
+        path: str,
+    ):
+        self.path: Path = Path(path).resolve() if path else None
+        self.resources: List[str] = list(self.parse_resources())
+
+    @property
+    def available(self) -> bool:
+        return bool(self.path) and self.path.is_file()
+
+    def is_resource_enabled(self, name: str) -> bool:
+        return name in self.resources
+
+    def parse_resources(self) -> Iterable[str]:
+        started: Dict[str, None] = {}
+
+        if not self.available:
+            return []
+
+        try:
+            contents = self.path.read_text('utf-8')
+        except Exception as error:
+            print(f'#[ERROR]# Unable to read {self.path!s}: {error}')
+            return []
+
+        line_no: int
+        raw_line: str
+        for line_no, raw_line in enumerate(contents.splitlines(), 1):
+            line = raw_line.strip()
+
+            # Filter out empty lines and comments
+            if not line or line.startswith('#'):
+                continue
+
+            match = re.match(CFG_KEY, line)
+            if not match:
+                continue
+
+            info = match.groupdict()
+
+            if info['command'] in ('ensure', 'start', 'restart'):
+                # Ignore if already started to keep initial position
+                if info['name'] in started:
+                    continue
+
+                started[info['name']] = None
+                continue
+
+            if info['command'] == 'stop' and info['name'] in started:
+                del started[info['name']]
+                continue
+
+            # raise ValueError(
+            #     f'Error: Unhandled match in: {self.path}:{line_no}'
+            #     f'\n{match}'
+            # )
+
+        yield from started.keys()
+
 class CfxEventChecker:
     def __init__(
         self,
         path: str,
+        config_path: str,
         ignore_events: List[str],
         ignore_resources: List[str],
         ignore_paths: List[str],
@@ -363,6 +430,7 @@ class CfxEventChecker:
         self.registers: Dict[str, EventMatch] = dict()
 
         self.path: Path = Path(path).resolve()
+        self.config = CfxConfig(path=config_path)
 
         self.ignored_events: List[str] = list(dict.fromkeys(IGNORED_EVENTS + ignore_events))
         self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resources))
@@ -388,6 +456,10 @@ class CfxEventChecker:
                 continue
 
             Debug.print(f'>>> Found manifest: {resource.rel_path.as_posix()}')
+
+            if self.config.available and not self.config.is_resource_enabled(resource.name):
+                Debug.print(f'>>> skipping DISABLED resource {resource.name}')
+                continue
 
             if resource.name in self.ignored_resources:
                 Debug.print(f'>>> skipping IGNORED resource {resource.name}')
@@ -523,6 +595,8 @@ def main(raw_args=None):
                         help='Add resource name to ignored resources (no globbing support)')
     parser.add_argument('-ip', '--ignore-path', action='append', default=[],
                         help='Add path to ignored paths - can be used to ignore complete folders (no globbing support)')
+    parser.add_argument('-c', '--cfg',
+                        help='Path to the server config file to only use check enabled resources')
     parser.add_argument('path',
                         help='Path to server resources folder')
 
@@ -533,6 +607,7 @@ def main(raw_args=None):
 
     app = CfxEventChecker(
         path=args.path,
+        config_path=args.cfg,
         ignore_events=args.ignore,
         ignore_resources=args.ignore_resource,
         ignore_paths=args.ignore_path,
