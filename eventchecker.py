@@ -361,7 +361,18 @@ class CfxConfig:
         path: str,
     ):
         self.path: Path = Path(path).resolve() if path else None
-        self.resources: List[str] = list(self.parse_resources())
+        self.resources: List[str] = self.parse_resources()
+
+        if Debug.enabled:
+            resources_list = ',\n  '.join(
+                ', '.join(rc)
+                for rc in (
+                    self.resources[i:i + 10]
+                    for i in range(0, len(self.resources), 10)
+                )
+            )
+
+            Debug.print(f'>>> Loaded resources: [\n  {resources_list}\n]')
 
     @property
     def available(self) -> bool:
@@ -370,51 +381,71 @@ class CfxConfig:
     def is_resource_enabled(self, name: str) -> bool:
         return name in self.resources
 
-    def parse_resources(self) -> Iterable[str]:
-        started: Dict[str, None] = {}
-
+    def parse_resources(self) -> List[str]:
         if not self.available:
             return []
 
-        try:
-            contents = self.path.read_text('utf-8')
-        except Exception as error:
-            print(f'#[ERROR]# Unable to read {self.path!s}: {error}')
-            return []
+        started: Dict[str, None] = {}
+        seen_paths: Set[Path] = set()
 
-        line_no: int
-        raw_line: str
-        for line_no, raw_line in enumerate(contents.splitlines(), 1):
-            line = raw_line.strip()
+        def _parse_contents_r(path: Path) -> None:
+            Debug.print(f'>>> Processing config: {path.relative_to(self.path.parent).as_posix()}')
 
-            # Filter out empty lines and comments
-            if not line or line.startswith('#'):
-                continue
+            if path in seen_paths:
+                print(f'#[WARN]# Cyclic exec {path!s}')
+                return
 
-            match = re.match(CFG_KEY, line)
-            if not match:
-                continue
+            seen_paths.add(path)
 
-            info = match.groupdict()
+            if not self.path.is_file():
+                return
 
-            if info['command'] in ('ensure', 'start', 'restart'):
-                # Ignore if already started to keep initial position
-                if info['name'] in started:
+            try:
+                contents = path.read_text('utf-8')
+            except Exception as error:
+                print(f'#[ERROR]# Unable to read {path!s}: {error}')
+                return
+
+            line_no: int
+            raw_line: str
+            for line_no, raw_line in enumerate(contents.splitlines(), 1):
+                line = raw_line.strip()
+
+                # Filter out empty lines and comments
+                if not line or line.startswith('#'):
                     continue
 
-                started[info['name']] = None
-                continue
+                match = re.match(CFG_KEY, line)
+                if not match:
+                    continue
 
-            if info['command'] == 'stop' and info['name'] in started:
-                del started[info['name']]
-                continue
+                info = match.groupdict()
 
-            # raise ValueError(
-            #     f'Error: Unhandled match in: {self.path}:{line_no}'
-            #     f'\n{match}'
-            # )
+                if info['command'] == 'exec':
+                    new_path = self.path.parent.joinpath(info['name']).resolve()
+                    _parse_contents_r(new_path)
+                    continue
 
-        yield from started.keys()
+                if info['command'] in ('ensure', 'start', 'restart'):
+                    # Ignore if already started to keep initial position
+                    if info['name'] in started:
+                        continue
+
+                    started[info['name']] = None
+                    continue
+
+                if info['command'] == 'stop' and info['name'] in started:
+                    del started[info['name']]
+                    continue
+
+                # raise ValueError(
+                #     f'Error: Unhandled match in: {path}:{line_no}'
+                #     f'\n{match}'
+                # )
+
+        _parse_contents_r(self.path)
+
+        return list(started)
 
 class CfxEventChecker:
     def __init__(
@@ -434,7 +465,7 @@ class CfxEventChecker:
 
         self.ignored_events: List[str] = list(dict.fromkeys(IGNORED_EVENTS + ignore_events))
         self.ignored_resources: List[str] = list(dict.fromkeys(IGNORED_RESOURCES + ignore_resources))
-        self.ignored_paths: List[str] = [
+        self.ignored_paths: List[Path] = [
             Path(path) for path
             in dict.fromkeys(IGNORED_PATHS + ignore_paths)
         ]
