@@ -17,9 +17,7 @@ TODO:
 
 import argparse
 import ast
-import fnmatch
 import re
-import sys
 from pathlib import Path
 from typing import (
     Dict,
@@ -111,73 +109,6 @@ class Debug:
     def print(cls, *args, **kwargs):
         if cls.enabled:
             print(*args, **kwargs)
-
-class LocationInfo:
-    def __init__(self, path: Path, line: int, script_type: str):
-        self.path: Path = path
-        self.line: int = line
-        self.script_type: str = script_type
-
-    def __str__(self):
-        return f'{self.path!s}:{self.line}'
-
-class EventMatch:
-    def __init__(self, match: re.Match):
-        self.data: Dict[str, str] = match.groupdict()
-        self.locations: Dict[Path, LocationInfo] = {}
-
-    def add(self, path: Path, line: int, script_type: str):
-        self.locations[path] = LocationInfo(
-            path=path,
-            line=line,
-            script_type=script_type,
-        )
-
-    @property
-    def function(self) -> str:
-        return self.data['func']
-
-    @property
-    def event_name(self) -> str:
-        return self.data['event']
-
-    @property
-    def is_event_handler(self) -> bool:
-        return self.function in (
-            'AddEventHandler',
-            'on',
-            'onNet',
-            'addEventListener',
-            'addNetEventListener',
-        )
-
-    @property
-    def is_event_emitter(self) -> bool:
-        return self.function in (
-            'TriggerEvent',
-            'TriggerClientEvent',
-            'TriggerServerEvent',
-            'emit',
-            'emitNet',
-            'TriggerLatentClientEvent',
-            'TriggerLatentServerEvent',
-        )
-
-    @property
-    def is_net_event_register(self) -> bool:
-        return self.function in (
-            'RegisterNetEvent',
-            'RegisterServerEvent',
-        )
-
-    def is_ignored_event(self, ignored_events: List[str]) -> bool:
-        return any(fnmatch.fnmatch(self.event_name, pattern) for pattern in ignored_events)
-
-    @property
-    def formatted_paths(self) -> str:
-        return '\n'.join(
-            map(str, self.locations.values())
-        )
 
 class CfxResource:
     MANIFEST_DEPENDENCY_KEY = re.compile(
@@ -538,7 +469,7 @@ class CfxDependencyTree:
         if out:
             out_path = Path(out)
             export_to_file(info, out_path)
-            print(f'Results written to: {out_path!s}', file=sys.stderr)
+            print(f'Results written to: {out_path!s}')
         elif info:
             print(info)
 
