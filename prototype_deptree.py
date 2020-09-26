@@ -39,9 +39,10 @@ IGNORED_RESOURCES = [
 #   exports.resource:function
 #   exports["foo-resource"]:function
 #   exports['bar.resource']:function
+#   local cachedExport = exports["foo-resource"]
 LUA_EXPORTS = re.compile(
     r'(?:^|[ \t]+)exports'
-    r'(?:\.(?P<resource1>\w+)|\[\s*["\'](?P<resource2>[^"\']+)["\']\s*\]):',
+    r'(?:\.(?P<resource1>\w+)|\[\s*["\'](?P<resource2>[^"\']+)["\']\s*\])(?:[:,]|[ \t]*$)',
     re.MULTILINE
 )
 
@@ -49,9 +50,10 @@ LUA_EXPORTS = re.compile(
 #   exports.resource.function
 #   exports["foo-resource"].function
 #   exports['bar.resource']['function-name']
+#   const cachedExport = exports.resource
 JS_EXPORTS = re.compile(
     r'(?:^|[ \t]+)exports'
-    r'(?:\.(?P<resource1>\w+)|\[\s*["\'](?P<resource2>[^"\']+)["\']\s*\])[.\[]',
+    r'(?:\.(?P<resource1>\w+)|\[\s*["\'](?P<resource2>[^"\']+)["\']\s*\])(?:[.\[]|[ \t;,]*?$)',
     re.MULTILINE
 )
 
@@ -99,7 +101,7 @@ def file_suffix_filter(files: Iterable[Path], suffixes: Iterable[str]) -> Iterab
         if path.suffix in suffixes:
             yield path
 
-def is_ignored_path(rel_path: Path, paths: List[str]):
+def is_ignored_path(rel_path: Path, paths: List[Path]):
     return any(path in rel_path.parents for path in paths)
 
 class Debug:
@@ -187,7 +189,7 @@ class CfxResource:
             contents = self.manifest.read_text('utf-8')
         except Exception as error:
             print(f'#[ERROR]# Unable to read {self.manifest!s}: {error}')
-            return []
+            return deps, files
 
         # remove all block comments
         contents = re.sub(LUA_BLOCK_COMMENT, '', contents)
@@ -249,10 +251,10 @@ class CfxConfig:
         self,
         path: str,
     ):
-        self.path: Path = Path(path).resolve() if path else None
+        self.path: Path = Path(path).resolve() if path else None  # type: ignore
         self.resources: List[str] = self.parse_resources()
 
-        if Debug.enabled:
+        if Debug.enabled and self.available:
             resources_list = ',\n  '.join(
                 ', '.join(rc)
                 for rc in (
@@ -308,23 +310,23 @@ class CfxConfig:
                 if not match:
                     continue
 
-                info = match.groupdict()
+                command, name = match.group('command', 'name')
 
-                if info['command'] == 'exec':
-                    new_path = self.path.parent.joinpath(info['name']).resolve()
+                if command == 'exec':
+                    new_path = self.path.parent.joinpath(name).resolve()
                     _parse_contents_r(new_path)
                     continue
 
-                if info['command'] in ('ensure', 'start', 'restart'):
+                if command in ('ensure', 'start', 'restart'):
                     # Ignore if already started to keep initial position
-                    if info['name'] in started:
+                    if name in started:
                         continue
 
-                    started[info['name']] = None
+                    started[name] = None
                     continue
 
-                if info['command'] == 'stop' and info['name'] in started:
-                    del started[info['name']]
+                if command == 'stop' and name in started:
+                    del started[name]
                     continue
 
                 # raise ValueError(
@@ -344,7 +346,7 @@ class CfxDependencyTree:
         ignore_resources: List[str],
         ignore_paths: List[str],
     ):
-        self.dependencies: Dict[str, List[str]] = dict()
+        self.dependencies: Dict[str, List[str]] = {}
 
         self.path: Path = Path(path).resolve()
         self.config = CfxConfig(path=config_path)
@@ -451,18 +453,18 @@ class CfxDependencyTree:
 
         else:
             # dependency: [resources using it]
-            dependencies_reversed = {}
+            dependencies_reversed: Dict[str, List[str]] = {}
             for resource_name, deps in self.dependencies.items():
                 for dep in deps:
                     if dep not in dependencies_reversed:
-                        temp[dep] = [resource_name]
+                        dependencies_reversed[dep] = [resource_name]
                     else:
                         dependencies_reversed[dep].append(resource_name)
 
-            for resource_name, dependents in dependencies_reversed.items():
+            for resource_name, dependents_list in dependencies_reversed.items():
                 data.append(f"{resource_name} - dependent resources:")
                 data.extend([
-                    f'  - {dep}' for dep in dependents
+                    f'  - {dep}' for dep in dependents_list
                 ])
 
         info = '\n'.join(data)
@@ -543,7 +545,7 @@ def main(raw_args=None):
     parser.add_argument('-ip', '--ignore-path', action='append', default=[],
                         help='Add path to ignored paths - can be used to ignore complete folders (no globbing support)')
     parser.add_argument('-c', '--cfg',
-                        help='Path to the server config file to only use check enabled resources')
+                        help='Path to the server config file to only check enabled resources')
     parser.add_argument('path',
                         help='Path to server resources folder')
 
