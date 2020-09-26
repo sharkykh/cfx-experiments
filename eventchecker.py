@@ -15,6 +15,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Match,
     Set,
     Tuple,
 )
@@ -176,7 +177,7 @@ def file_suffix_filter(files: Iterable[Path], suffixes: Iterable[str]) -> Iterab
         if path.suffix in suffixes:
             yield path
 
-def is_ignored_path(rel_path: Path, paths: List[str]):
+def is_ignored_path(rel_path: Path, paths: List[Path]):
     return any(path in rel_path.parents for path in paths)
 
 class Debug:
@@ -197,7 +198,7 @@ class LocationInfo:
         return f'{self.path!s}:{self.line}'
 
 class EventMatch:
-    def __init__(self, match: re.Match):
+    def __init__(self, match: Match[str]):
         self.data: Dict[str, str] = match.groupdict()
         self.locations: Dict[Path, LocationInfo] = {}
 
@@ -360,7 +361,7 @@ class CfxConfig:
         self,
         path: str,
     ):
-        self.path: Path = Path(path).resolve() if path else None
+        self.path: Path = Path(path).resolve() if path else None  # type: ignore
         self.resources: List[str] = self.parse_resources()
 
         if Debug.enabled:
@@ -419,23 +420,23 @@ class CfxConfig:
                 if not match:
                     continue
 
-                info = match.groupdict()
+                command, name = match.group('command', 'name')
 
-                if info['command'] == 'exec':
-                    new_path = self.path.parent.joinpath(info['name']).resolve()
+                if command == 'exec':
+                    new_path = self.path.parent.joinpath(name).resolve()
                     _parse_contents_r(new_path)
                     continue
 
-                if info['command'] in ('ensure', 'start', 'restart'):
+                if command in ('ensure', 'start', 'restart'):
                     # Ignore if already started to keep initial position
-                    if info['name'] in started:
+                    if name in started:
                         continue
 
-                    started[info['name']] = None
+                    started[name] = None
                     continue
 
-                if info['command'] == 'stop' and info['name'] in started:
-                    del started[info['name']]
+                if command == 'stop' and name in started:
+                    del started[name]
                     continue
 
                 # raise ValueError(
@@ -532,14 +533,18 @@ class CfxEventChecker:
             raise ValueError('Unsupported file type')
 
         line_map = [m.end() for m in re.finditer(LINE_MAP_REGEX, contents)]
+        line_no = -1
+        next_index = 0
+
         for match in re.finditer(pattern, contents):
-            for line_no, pos in enumerate(line_map, 1):
+            for line_no, pos in enumerate(line_map[next_index:], next_index + 1):
                 if pos > match.start():
+                    next_index = line_no
                     break
 
             self.process_match(match, path, line_no, script_type)
 
-    def process_match(self, match: re.Match, resource_path: Path, line_no: int, script_type: str):
+    def process_match(self, match: Match[str], resource_path: Path, line_no: int, script_type: str):
         result = EventMatch(match)
 
         if result.is_ignored_event(self.ignored_events):
@@ -567,7 +572,7 @@ class CfxEventChecker:
         # Debug.print(f'File: {resource_path} [{script_type}] | Is: {result.function} | Event: {result.event_name}')
 
     @staticmethod
-    def comment_replace(match: re.Match):
+    def comment_replace(match: Match[str]):
         return '\n' * match.group(0).count('\n')
 
     def results(self, out: str, triggers: bool):
