@@ -364,7 +364,7 @@ class CfxConfig:
         self.path: Path = Path(path).resolve() if path else None  # type: ignore
         self.resources: List[str] = self.parse_resources()
 
-        if Debug.enabled:
+        if Debug.enabled and self.available:
             resources_list = ',\n  '.join(
                 ', '.join(rc)
                 for rc in (
