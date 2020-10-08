@@ -3,7 +3,32 @@
 Script that scans FXServer resources in search of possible non-emitted/non-triggered events.
 Requires Python 3.7+
 
-https://gist.github.com/sharkykh/e57ba52e70c8d1f060cf5c952fff9b75
+Usage:
+eventchecker.py [-h] [-o OUT] [-r] [-d] [-i IGNORE]
+                [-ir IGNORE_RESOURCE] [-ip IGNORE_PATH] [-c CFG]
+                path
+
+positional arguments:
+  path                  Path to server resources folder
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -o OUT, --out OUT     Dump result to file
+  -r, --reverse         Look for possible non-handled event emitters/triggers
+                        instead
+  -d, --debug
+  -i IGNORE, --ignore IGNORE
+                        Add event name to ignored events (can use globbing - *
+                        ?)
+  -ir IGNORE_RESOURCE, --ignore-resource IGNORE_RESOURCE
+                        Add resource name to ignored resources (no globbing
+                        support)
+  -ip IGNORE_PATH, --ignore-path IGNORE_PATH
+                        Add path to ignored paths - can be used to ignore
+                        complete folders (no globbing support)
+  -c CFG, --cfg CFG     Path to the server config file to only check
+                        enabled resources
+
 """
 
 import argparse
@@ -632,7 +657,7 @@ def main(raw_args=None):
     parser.add_argument('-ip', '--ignore-path', action='append', default=[],
                         help='Add path to ignored paths - can be used to ignore complete folders (no globbing support)')
     parser.add_argument('-c', '--cfg',
-                        help='Path to the server config file to only use check enabled resources')
+                        help='Path to the server config file to only check enabled resources')
     parser.add_argument('path',
                         help='Path to server resources folder')
 
