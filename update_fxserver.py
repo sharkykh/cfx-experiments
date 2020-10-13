@@ -5,7 +5,7 @@ import string
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast, NamedTuple
+from typing import Optional, NamedTuple, cast
 from urllib.parse import urljoin
 from zipfile import ZipFile
 
@@ -18,8 +18,32 @@ def get_random_string(length):
 
 class Artifact(NamedTuple):
     version: int
-    published: datetime
+    published: Optional[datetime]
     url: str
+
+def get_api_latest_artifact():
+    resp = requests.get(
+        url='https://changelogs-live.fivem.net/api/changelog/versions/win32/server',
+        # params={get_random_string(5): get_random_string(5)},
+        headers={'User-Agent': 'FXServer Updater Tool/v0.1'},
+    )
+    data = resp.json()
+    # {
+    #   "recommended":"2967",
+    #   "optional":"2967",
+    #   "latest":"3046",
+    #   "critical":"2524",
+    #   "recommended_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2967-2b71645c6a0aa659e8df6ac34a3a1e487e95aedb/server.zip",
+    #   "optional_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2967-2b71645c6a0aa659e8df6ac34a3a1e487e95aedb/server.zip",
+    #   "latest_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/3046-7c8d3d261c9303ee457495b3dd06c784310186bb/server.zip",
+    #   "critical_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2524-c1cb49c3aef1ad58d622a34de3bdbaf66f7dd0bb/server.zip"
+    # }
+
+    return Artifact(
+        version=int(data['latest']),
+        published=None,
+        url=data['latest_download'],
+    )
 
 def get_artifact():
     base_url = 'https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/'
@@ -96,11 +120,12 @@ def main(raw_args=None):
     print(f'current artifact: {current_artifact}')
 
     if wanted_artifact <= -1:
-        try:
-            artifact = next(get_artifact())
-        except StopIteration:
-            print('no artifacts found?')
-            return
+        # try:
+        #     artifact = next(get_artifact())
+        # except StopIteration:
+        #     print('no artifacts found?')
+        #     return
+        artifact = get_api_latest_artifact()
         latest_str = 'latest'
     else:
         try:
