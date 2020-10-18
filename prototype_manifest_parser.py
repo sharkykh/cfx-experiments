@@ -163,7 +163,9 @@ class CfxResource:
     def manifest_version(self) -> str:
         if self.major_version == 1:
             if 'resource_manifest_version' not in self._data:
-                raise KeyError(f'no version for ' + str(self.manifest_path))
+                # https://docs.fivem.net/docs/scripting-reference/resource-manifest/resource-manifest/#no-manifest-version
+                return '00000000-0000-0000-0000-000000000000'
+                # raise KeyError(f'no version for ' + str(self.manifest_path))
 
             return self._data['resource_manifest_version'][0]
 
@@ -192,22 +194,46 @@ def print_test(resource: CfxResource):
 
 def main(raw_args: List[str]):
     if len(raw_args) == 0:
-        cwd = Path().resolve()
-        paths: List[Union[Path, str]] = [
-            *cwd.rglob('fxmanifest.lua'),
-            *cwd.rglob('__resource.lua'),
+        base = Path().resolve()
+        paths: List[Path] = [
+            *base.rglob('fxmanifest.lua'),
+            *base.rglob('__resource.lua'),
         ]
     elif len(raw_args) == 1:
-        paths: List[Union[Path, str]] = [raw_args[0]]
+        base = Path(raw_args[0]).resolve()
+        if base.is_file():
+            paths: List[Path] = [base]
+        elif base.is_dir():
+            paths: List[Path] = [
+                *base.rglob('fxmanifest.lua'),
+                *base.rglob('__resource.lua'),
+            ]
+        else:
+            return
     else:
         print('Error: Needs manifest path')
         return
 
     for path in paths:
-        resource = CfxResource(
-            manifest_path=path
-        )
-        print_test(resource)
+        try:
+            resource = CfxResource(
+                manifest_path=path
+            )
+        except ValueError:
+            continue
+
+        # print_test(resource)
+
+        if (
+            resource.major_version == 1 or
+            (resource.major_version == 2 and resource.manifest_version != 'cerulean')
+        ):
+            print('outdated resource version')
+            print(
+                f' > v{resource.major_version}'
+                f' : {resource.manifest_version}'
+                f' > {resource.manifest_path.parent.relative_to(base)}'
+            )
 
 
 if __name__ == '__main__':
