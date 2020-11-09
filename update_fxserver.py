@@ -5,12 +5,16 @@ import string
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, NamedTuple, cast
+from typing import NamedTuple, Optional, cast
 from urllib.parse import urljoin
 from zipfile import ZipFile
 
 import bs4
 import requests
+
+
+def debug_file():
+    return Path.cwd().resolve() / 'page.html'
 
 def get_random_string(length):
     chars = string.ascii_letters + string.digits
@@ -21,23 +25,26 @@ class Artifact(NamedTuple):
     published: Optional[datetime]
     url: str
 
-def get_api_latest_artifact():
-    resp = requests.get(
-        url='https://changelogs-live.fivem.net/api/changelog/versions/win32/server',
-        # params={get_random_string(5): get_random_string(5)},
-        headers={'User-Agent': 'FXServer Updater Tool/v0.1'},
-    )
-    data = resp.json()
-    # {
-    #   "recommended":"2967",
-    #   "optional":"2967",
-    #   "latest":"3046",
-    #   "critical":"2524",
-    #   "recommended_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2967-2b71645c6a0aa659e8df6ac34a3a1e487e95aedb/server.zip",
-    #   "optional_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2967-2b71645c6a0aa659e8df6ac34a3a1e487e95aedb/server.zip",
-    #   "latest_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/3046-7c8d3d261c9303ee457495b3dd06c784310186bb/server.zip",
-    #   "critical_download":"https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/2524-c1cb49c3aef1ad58d622a34de3bdbaf66f7dd0bb/server.zip"
-    # }
+def get_api_latest_artifact(debug: bool = False):
+    if debug:
+        base = 'https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/'
+        data = {
+            'recommended': '2967',
+            'optional': '3071',
+            'latest': '3155',
+            'critical': '2524',
+            'recommended_download': urljoin(base, '2967-2b71645c6a0aa659e8df6ac34a3a1e487e95aedb/server.zip'),
+            'optional_download': urljoin(base, '3071-31b78e9d17dcf63887a5abe0bc36c9f886b2fc3b/server.zip'),
+            'latest_download': urljoin(base, '3155-0d1e9a970c3722847642e71abb36d833057f6402/server.zip'),
+            'critical_download': urljoin(base, '2524-c1cb49c3aef1ad58d622a34de3bdbaf66f7dd0bb/server.zip'),
+        }
+    else:
+        resp = requests.get(
+            url='https://changelogs-live.fivem.net/api/changelog/versions/win32/server',
+            # params={get_random_string(5): get_random_string(5)},
+            headers={'User-Agent': 'FXServer Updater Tool/v0.1'},
+        )
+        data = resp.json()
 
     return Artifact(
         version=int(data['latest']),
@@ -45,13 +52,13 @@ def get_api_latest_artifact():
         url=data['latest_download'],
     )
 
-def get_artifact():
+def get_artifact(is_debug):
     base_url = 'https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/'
 
-    debug = (Path(__file__).parent / 'page.html')
-    if debug.is_file():
-        print(f'using {debug}')
-        body = debug.read_text('utf-8')
+    if is_debug:
+        df = debug_file()
+        print(f'using {df}')
+        body = df.read_text('utf-8')
     else:
         resp = requests.get(
             url=base_url,
@@ -95,11 +102,14 @@ def download(artifact: Artifact, path: Path) -> bool:
     return True
 
 def get_server_artifact_version(server: Path) -> int:
-    server_version = get_version_string(
-        str(server / 'citizen-server-impl.dll'),
-        'FileVersion',
-    )
-    return int(server_version.rsplit('.', 1)[1])
+    try:
+        server_version = get_version_string(
+            str(server / 'citizen-server-impl.dll'),
+            'FileVersion',
+        )
+        return int(server_version.rsplit('.', 1)[1])
+    except FileNotFoundError:
+        return -1
 
 class Arguments(argparse.Namespace):
     artifact_version: int
@@ -111,8 +121,10 @@ def main(raw_args=None):
 
     args: Arguments = parser.parse_args(raw_args)  # type: ignore
 
-    here = Path(__file__).parent
+    # here = Path(__file__).parent
+    here = Path.cwd().resolve()
     server = here / 'server'
+    is_debug = debug_file().is_file()
 
     current_artifact = get_server_artifact_version(server)
     wanted_artifact = args.artifact_version
@@ -120,16 +132,15 @@ def main(raw_args=None):
     print(f'current artifact: {current_artifact}')
 
     if wanted_artifact <= -1:
-        # try:
-        #     artifact = next(get_artifact())
-        # except StopIteration:
-        #     print('no artifacts found?')
-        #     return
-        artifact = get_api_latest_artifact()
+        artifact = get_api_latest_artifact(is_debug)
         latest_str = 'latest'
+
+        if artifact.version < current_artifact:
+            print(f'{latest_str} artifact is older than current')
+            return
     else:
         try:
-            artifact = next(a for a in get_artifact() if a.version == wanted_artifact)
+            artifact = next(a for a in get_artifact(is_debug) if a.version == wanted_artifact)
         except StopIteration:
             print(f'artifact {wanted_artifact} not found')
             return
@@ -233,7 +244,8 @@ def get_version_string(filename, what, language=None):
     return ctypes.wstring_at(cast(int, value.value), value_size.value - 1)
 
 if __name__ == '__main__':
-    try:
-        main()
-    finally:
-        input('press ENTER to exit')
+    main()
+    # try:
+    #     main()
+    # finally:
+    #     input('press ENTER to exit')
