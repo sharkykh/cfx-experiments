@@ -80,6 +80,18 @@ def get_artifact(is_debug):
 
     del soup
 
+def get_latest_artifact(is_debug: bool) -> Optional[Artifact]:
+    try:
+        return get_api_latest_artifact(is_debug)
+    except Exception:
+        pass
+
+    try:
+        return next(get_artifact(is_debug))
+    except StopIteration:
+        print('no artifacts found?')
+        return
+
 def download(artifact: Artifact, path: Path) -> bool:
     with requests.get(artifact.url, stream=True) as r:
         r.raise_for_status()
@@ -132,8 +144,11 @@ def main(raw_args=None):
     print(f'current artifact: {current_artifact}')
 
     if wanted_artifact <= -1:
-        artifact = get_api_latest_artifact(is_debug)
+        artifact = get_latest_artifact(is_debug)
         latest_str = 'latest'
+
+        if not artifact:
+            return
 
         if artifact.version < current_artifact:
             print(f'{latest_str} artifact is older than current')
