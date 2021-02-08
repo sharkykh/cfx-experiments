@@ -45,31 +45,39 @@ def main_client(fivem: Path):
     adhesive_bak = adhesive.with_name(f'x{adhesive.name}')
     formaldev = fivem / 'FiveM.exe.formaldev'
     nobootstrap = fivem / 'nobootstrap.txt'
-    components = fivem / 'components.json'
-    components_bak = components.with_name(f'{components.name}.bak')
+    # components = fivem / 'components.json'
+    # components_bak = components.with_name(f'{components.name}.bak')
 
     active = adhesive_bak.is_file() or formaldev.is_file() or nobootstrap.is_file()
 
     if active:
-        adhesive_bak.rename(adhesive)
-        print(f'renamed {adhesive_bak.name} to {adhesive.name}')
+        try:
+            adhesive_bak.rename(adhesive)
+            print(f'renamed {adhesive_bak.name} to {adhesive.name}')
+        except FileNotFoundError:
+            print(f'skipping {adhesive_bak.name}')
+
         formaldev.unlink()
         print(f'deleted {formaldev.name}')
         nobootstrap.unlink()
         print(f'deleted {nobootstrap.name}')
-        components_bak.replace(components)
-        print(f'restored {components.name} backup')
+        # components_bak.replace(components)
+        # print(f'restored {components.name} backup')
         print('client: back to normal')
     else:
-        adhesive.rename(adhesive_bak)
-        print(f'renamed {adhesive.name} to {adhesive_bak.name}')
+        try:
+            adhesive.rename(adhesive_bak)
+            print(f'renamed {adhesive.name} to {adhesive_bak.name}')
+        except FileNotFoundError:
+            print(f'skipping {adhesive.name}')
+
         formaldev.touch()
         print(f'created {formaldev.name}')
         nobootstrap.touch()
         print(f'created {nobootstrap.name}')
-        components.replace(components_bak)
-        remove_component(components_bak, components, 'adhesive')
-        print(f'removed `adhesive` from {components.name}')
+        # components.replace(components_bak)
+        # remove_component(components_bak, components, 'adhesive')
+        # print(f'removed `adhesive` from {components.name}')
         print('client: activated')
 
 def main():
