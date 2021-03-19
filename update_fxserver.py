@@ -9,7 +9,6 @@ from typing import NamedTuple, Optional, cast
 from urllib.parse import urljoin
 from zipfile import ZipFile
 
-import bs4
 import requests
 
 
@@ -53,6 +52,11 @@ def get_api_latest_artifact(debug: bool = False):
     )
 
 def get_artifact(is_debug):
+    try:
+        import bs4
+    except ImportError as error:
+        raise ModuleNotFoundError('\nPlease install "BeautifulSoup" using: pip install beautifulsoup4') from error
+
     base_url = 'https://runtime.fivem.net/artifacts/fivem/build_server_windows/master/'
 
     if is_debug:
@@ -188,6 +192,7 @@ def main(raw_args=None):
 
     print('done')
 
+# https://stackoverflow.com/a/56266129
 def get_version_string(filename, what, language=None):
     """
     returns the requested version information from the given file
